@@ -10,6 +10,7 @@ from django import http
 from .specify_jar import specify_jar
 from . import api, models
 
+
 if settings.ANONYMOUS_USER:
     login_maybe_required = lambda func: func
 else:
@@ -20,6 +21,20 @@ else:
                 return http.HttpResponseForbidden()
             return view(request, *args, **kwargs)
         return wrapped
+
+preps_available_sql = """select co.CatalogNumber, t.FullName, p.preparationid, pt.name, p.countAmt, sum(lp.quantity-lp.quantityreturned) Loaned,
+sum(gp.quantity) Gifted, sum(ep.quantity) Exchanged,
+p.countAmt - coalesce(sum(lp.quantity-lp.quantityreturned),0) - coalesce(sum(gp.quantity),0) - coalesce(sum(ep.quantity),0) Available
+from preparation p
+left join loanpreparation lp on lp.preparationid = p.preparationid
+left join giftpreparation gp on gp.preparationid = p.preparationid
+left join exchangeoutprep ep on ep.PreparationID = p.PreparationID
+inner join collectionobject co on co.CollectionObjectID = p.CollectionObjectID
+inner join preptype pt on pt.preptypeid = p.preptypeid
+left join determination d on d.CollectionObjectID = co.CollectionObjectID
+left join taxon t on t.TaxonID = d.TaxonID
+where pt.isloanable and p.collectionmemberid = %s and (d.IsCurrent or d.DeterminationID is null) and p.collectionobjectid in (
+%s) group by 1,2,3,4,5 order by 1;"""
 
 class HttpResponseConflict(http.HttpResponse):
     status_code = 409
@@ -106,3 +121,112 @@ def set_admin_status(request, userid):
         user.clear_admin()
         return http.HttpResponse('false', content_type='text/plain')
 
+@require_GET
+def preps_available_rs(request, recordset_id):
+    from django.db import connection
+    cursor = connection.cursor()
+    cursor.execute("""
+    select co.CatalogNumber, t.FullName, p.preparationid, pt.name, p.countAmt, sum(lp.quantity-lp.quantityreturned) Loaned,
+           sum(gp.quantity) Gifted, sum(ep.quantity) Exchanged,
+           p.countAmt - coalesce(sum(lp.quantity-lp.quantityreturned),0) - coalesce(sum(gp.quantity),0) - coalesce(sum(ep.quantity),0) Available
+    from preparation p
+    left join loanpreparation lp on lp.preparationid = p.preparationid
+    left join giftpreparation gp on gp.preparationid = p.preparationid
+    left join exchangeoutprep ep on ep.PreparationID = p.PreparationID
+    inner join collectionobject co on co.CollectionObjectID = p.CollectionObjectID
+    inner join preptype pt on pt.preptypeid = p.preptypeid
+    left join determination d on d.CollectionObjectID = co.CollectionObjectID
+    left join taxon t on t.TaxonID = d.TaxonID
+    where pt.isloanable and p.collectionmemberid = %s and (d.IsCurrent or d.DeterminationID is null) and p.collectionobjectid in (
+        select recordid from recordsetitem where recordsetid=%s
+    ) group by 1,2,3,4,5 order by 1;
+       """, [request.specify_collection.id, recordset_id])
+    rows = cursor.fetchall()
+
+    return http.HttpResponse(api.toJson(rows), content_type='application/json')
+
+@require_POST
+@csrf_exempt
+@login_maybe_required
+def preps_available_ids(request):
+    from django.db import connection
+    cursor = connection.cursor()
+    sql = """
+    select co.CatalogNumber, t.FullName, p.preparationid, pt.name, p.countAmt, sum(lp.quantity-lp.quantityreturned) Loaned,
+           sum(gp.quantity) Gifted, sum(ep.quantity) Exchanged,
+           p.countAmt - coalesce(sum(lp.quantity-lp.quantityreturned),0) - coalesce(sum(gp.quantity),0) - coalesce(sum(ep.quantity),0) Available
+    from preparation p
+    left join loanpreparation lp on lp.preparationid = p.preparationid
+    left join giftpreparation gp on gp.preparationid = p.preparationid
+    left join exchangeoutprep ep on ep.PreparationID = p.PreparationID
+    inner join collectionobject co on co.CollectionObjectID = p.CollectionObjectID
+    inner join preptype pt on pt.preptypeid = p.preptypeid
+    left join determination d on d.CollectionObjectID = co.CollectionObjectID
+    left join taxon t on t.TaxonID = d.TaxonID
+    where pt.isloanable and p.collectionmemberid = %s and (d.IsCurrent or d.DeterminationID is null) and
+    """
+    sql += " co." + request.POST['id_fld'] + " in(" + request.POST['co_ids'] + ") group by 1,2,3,4,5 order by 1;"
+
+    cursor.execute(sql, [int(request.specify_collection.id)])
+    rows = cursor.fetchall()
+
+    return http.HttpResponse(api.toJson(rows), content_type='application/json')
+
+@login_maybe_required
+@require_GET
+def preps_available_rs2(request, recordset_id):
+    from django.db import connection
+    cursor = connection.cursor()
+    cursor.execute(preps_available_sql, [request.specify_collection.id,  6])
+    rows = cursor.fetchall()
+
+    return http.HttpResponse(api.toJson(rows), content_type='application/json')
+
+@login_maybe_required
+@require_GET
+def preps_available_ids2(request, ids):
+    from django.db import connection
+    cursor = connection.cursor()
+    cursor.execute(preps_available_sql, [request.specify_collection.id, ids])
+    rows = cursor.fetchall()
+
+    return http.HttpResponse(api.toJson(rows), content_type='application/json')
+
+from django.db import transaction
+
+
+@require_POST
+@csrf_exempt
+@login_maybe_required
+@transaction.commit_manually
+def loan_return_all_items(request):
+    from django.db import connection
+
+    cursor = connection.cursor()
+
+    sql="""
+    insert into loanreturnpreparation(TimestampCreated, Version, QuantityResolved, QuantityReturned, ReturnedDate, DisciplineID, ReceivedByID, LoanPreparationID, CreatedByAgentID)
+    select now(), 0, lp.Quantity - lp.QuantityResolved, lp.Quantity - lp.QuantityResolved, date(%s), %s, %s, lp.LoanPreparationID, %s
+    from loanpreparation lp where lp.LoanID in(
+    """
+    sql += request.POST['loanIds'] + ")  and not lp.IsResolved and lp.Quantity - lp.QuantityResolved != 0;"
+    cursor.execute(sql, [unicode(request.POST['returnedDate']), request.specify_collection.discipline.id, int(request.POST['returnedById']), int(request.specify_user.id)])
+
+    sql="update loanpreparation set TimestampModified = now(), ModifiedByAgentID = %s, Version = Version+1, QuantityReturned=QuantityReturned+Quantity-QuantityResolved, QuantityResolved=Quantity, IsResolved=true where not IsResolved and LoanID in(" + request.POST['loanIds'] + ");"
+
+    cursor.execute(sql, [int(request.specify_user.id)])
+    prepsReturned = cursor.fetchone()
+
+    if (request.POST['selection'] != ""):
+        sql="update loan set TimestampModified = now(), ModifiedByAgentID = %s, Version = Version+1, IsClosed=true, DateClosed=date(%s) where not IsClosed and LoanNumber in(" + request.POST['selection'] + ");"
+        cursor.execute(sql, [int(request.specify_user.id), unicode(request.POST['returnedDate'])])
+    else:
+        sql="update loan set TimestampModified = now(), ModifiedByAgentID = %s, Version = Version+1, IsClosed=true, DateClosed=date(%s) where not IsClosed and LoanID in(" + request.POST['loanIds'] + ");"
+        cursor.execute(sql, [int(request.specify_user.id), unicode(request.POST['returnedDate'])])
+
+    loansClosed = cursor.fetchone()
+
+    transaction.set_dirty()
+    transaction.commit()
+
+    return http.HttpResponse(api.toJson([prepsReturned, loansClosed]), content_type='application/json')

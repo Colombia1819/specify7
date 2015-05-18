@@ -41,6 +41,11 @@ urlpatterns = patterns('',
     url(r'^api/set_password/(?P<userid>\d+)/$', 'specifyweb.specify.views.set_password'),
     url(r'^api/set_admin_status/(?P<userid>\d+)/$', 'specifyweb.specify.views.set_admin_status'),
 
+    # loan api stuff
+    url(r'^api/preparations_available_rs/(?P<recordset_id>\d+)/', 'specifyweb.specify.views.preps_available_rs'),
+    url(r'^api/preparations_available_ids/', 'specifyweb.specify.views.preps_available_ids'),
+    url(r'^api/loan_return_all/', 'specifyweb.specify.views.loan_return_all_items'),
+
     # access to various UI and app resources starts here
     url(r'^images/(?P<path>.+)$', 'specifyweb.specify.views.images'),
     url(r'^properties/(?P<name>.+).properties$', 'specifyweb.specify.views.properties'),

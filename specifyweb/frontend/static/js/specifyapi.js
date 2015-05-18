@@ -67,7 +67,16 @@ define([
         makeResourceViewUrl: function(specifyModel, resourceId, recordSetId) {
             var url = '/specify/view/' + specifyModel.name.toLowerCase() + '/' + (resourceId || 'new') + '/';
             return $.param.querystring(url, {recordsetid: recordSetId});
-        }
+        },
+	getPrepsAvailableForLoanRs: function(recordSetId) {
+	    return $.get('/api/preparations_available_rs/' + recordSetId + '/');
+	},
+	getPrepsAvailableForLoanCoIds: function(idFld, collectionObjectIds) {
+	    return $.post('/api/preparations_available_ids/', {id_fld: idFld, co_ids: collectionObjectIds});
+	},
+	returnAllLoanItems: function(loanIds, returnedById, returnedDate, selection) {
+	    return $.post('/api/loan_return_all/', {loanIds: loanIds, returnedById: returnedById, returnedDate: returnedDate, selection: selection});
+	}
     });
 
     return api;

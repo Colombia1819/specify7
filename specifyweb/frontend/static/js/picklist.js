@@ -120,7 +120,6 @@ define([
         },
         render: function() {
             this.initializing.then(this._render.bind(this));
-            return this;
         },
         _render: function() {
             if (!this.initialized) {
